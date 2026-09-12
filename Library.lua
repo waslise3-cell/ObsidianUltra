@@ -1611,36 +1611,156 @@ function Library:GetIcon(IconName: string)
     return Icon
 end
 
-function Library:GetCustomIcon(IconName: string): any
-    if not IconName then
+-- Universal 2D asset resolver.
+-- Accepts Roblox asset IDs, Roblox/content URLs, Lucide icons and direct
+-- http/https image URLs. Remote images are cached in custom_assets so the
+-- same URL can be used anywhere the library asks for an image/icon.
+do
+    local function SanitizeAssetName(Value: string): string
+        Value = tostring(Value)
+        Value = Value:gsub("[^%w%._%-]", "_")
+        Value = Value:gsub("_+", "_")
+        Value = Value:gsub("^_+", "")
+        Value = Value:gsub("_+$", "")
+        if Value == "" then
+            Value = "RemoteImage"
+        end
+        return Value
+    end
+
+    local function StableStringHash(Value: string): string
+        local Hash = 5381
+        for Index = 1, #Value do
+            Hash = (Hash * 33 + string.byte(Value, Index)) % 2147483647
+        end
+        return string.format("%08x", Hash)
+    end
+
+    local function GetRemoteAssetName(URL: string): string
+        local CleanURL = URL:match("^[^?#]+") or URL
+        local Host = CleanURL:match("^https?://([^/]+)") or "remote"
+        local Path = CleanURL:match("^https?://[^/]+/(.+)$") or "image"
+        local FileName = Path:match("([^/]+)$") or "image"
+
+        Host = SanitizeAssetName(Host)
+        FileName = SanitizeAssetName(FileName)
+
+        local Extension = FileName:match("(%.[%w]+)$")
+        if not Extension then
+            Extension = ".png"
+            FileName = FileName .. Extension
+        end
+
+        local Name = Host .. "_" .. FileName
+        local Hash = StableStringHash(URL)
+
+        -- Keep executor file paths comfortably below Windows/path limits.
+        if #Name > 190 then
+            local Base = Name:sub(1, 190 - #Extension)
+            Name = Base .. Extension
+        end
+
+        return Name:sub(1, 220 - #Hash) .. "_" .. Hash
+    end
+
+    local function ResolveRemoteImage(URL: string): string?
+        if typeof(URL) ~= "string" then
+            return nil
+        end
+
+        if not URL:match("^https?://") then
+            return nil
+        end
+
+        local AssetName = GetRemoteAssetName(URL)
+        local Existing = CustomImageManagerAssets[AssetName]
+
+        if not Existing then
+            local Success = pcall(function()
+                CustomImageManager.AddAsset(AssetName, 0, URL)
+            end)
+
+            if not Success then
+                return nil
+            end
+        else
+            -- If it was already registered but the local file is gone,
+            -- DownloadAsset will recreate it.
+            CustomImageManager.DownloadAsset(AssetName)
+        end
+
+        local Asset = CustomImageManager.GetAsset(AssetName)
+        if Asset and Asset ~= "rbxassetid://0" then
+            return Asset
+        end
+
         return nil
     end
 
-    if tonumber(IconName) then
-        IconName = string.format("rbxassetid://%s", tostring(IconName))
-    end
+    function Library:Resolve2DAsset(Value: any): any
+        if Value == nil then
+            return nil
+        end
 
-    if IsCustomAssetIcon(IconName, true) then
-        return {
-            Url = IconName,
-            ImageRectOffset = Vector2.zero,
-            ImageRectSize = Vector2.zero,
-        }
-    elseif IsValidCustomIcon(IconName) then
-        return {
-            Url = IconName,
-            ImageRectOffset = Vector2.zero,
-            ImageRectSize = Vector2.zero,
-            Custom = true,
-        }
-    end
+        if typeof(Value) == "number" then
+            Value = tostring(Value)
+        end
 
-    local LucideIcon = Library:GetIcon(IconName)
-    if LucideIcon then
-        return LucideIcon
-    end
+        if typeof(Value) ~= "string" then
+            return nil
+        end
 
-    return nil
+        Value = Value:gsub("^%s+", ""):gsub("%s+$", "")
+        if Value == "" then
+            return nil
+        end
+
+        if tonumber(Value) then
+            Value = "rbxassetid://" .. Value
+        end
+
+        if IsCustomAssetIcon(Value, true) then
+            return {
+                Url = Value,
+                ImageRectOffset = Vector2.zero,
+                ImageRectSize = Vector2.zero,
+            }
+        end
+
+        if IsValidCustomIcon(Value) then
+            return {
+                Url = Value,
+                ImageRectOffset = Vector2.zero,
+                ImageRectSize = Vector2.zero,
+                Custom = true,
+            }
+        end
+
+        if Value:match("^https?://") then
+            local RemoteURL = ResolveRemoteImage(Value)
+            if RemoteURL then
+                return {
+                    Url = RemoteURL,
+                    ImageRectOffset = Vector2.zero,
+                    ImageRectSize = Vector2.zero,
+                    Custom = true,
+                    Remote = true,
+                    Source = Value,
+                }
+            end
+        end
+
+        local LucideIcon = Library:GetIcon(Value)
+        if LucideIcon then
+            return LucideIcon
+        end
+
+        return nil
+    end
+end
+
+function Library:GetCustomIcon(IconName: string): any
+    return Library:Resolve2DAsset(IconName)
 end
 
 function Library:ApplyLucideIcon(ImageGui: any, Icon: any, Rotation: number?)
@@ -16199,49 +16319,19 @@ function Library:CreateWindow(WindowInfo)
         return Window
     end
 
-    function Window:SetBackgroundImage(Image: string)
+    function Window:SetBackgroundImage(Image: string | number)
         local ValidIcon = false
+
+        if typeof(Image) == "number" then
+            Image = tostring(Image)
+        end
 
         if typeof(Image) == "string" then
             local BackgroundIcon = Library:GetCustomIcon(Image)
 
             if BackgroundIcon then
                 ValidIcon = true
-
                 Library:ApplyLucideIcon(BackgroundImage, BackgroundIcon)
-            elseif Image:match("http://") or Image:match("https://") then
-                local RawFileName = Image:match("(.+)%..+$")
-                local _, Domain = Image:match("^(https?://)([^/]+)");
-
-                if RawFileName and Domain then
-                    local Extention = string.sub(Image, #RawFileName + 1, #Image)
-                    local FileNamePos = RawFileName:gsub("\\", "/"):find("/[^/]*$")
-                    local FileName = FileNamePos and Image:sub(FileNamePos + 1) or nil
-
-                    if FileName then
-                        ValidIcon = true
-
-                        local AssetName = Domain .. FileName
-                        if #AssetName > 255 then
-                            local NewLength = 255 - #Domain - #Extention
-                            if NewLength < 0 then
-                                AssetName = Domain .. Extention
-                            else
-                                AssetName = Domain .. string.sub(FileName:sub(1, #FileName - #Extention), 1, NewLength) .. Extention
-                            end
-                        end
-
-                        if CustomImageManagerAssets[FileName] == nil then
-                            CustomImageManager.AddAsset(FileName, 0, Image)
-                        else
-                            CustomImageManager.DownloadAsset(FileName, true)
-                        end
-
-                        BackgroundImage.Image = CustomImageManager.GetAsset(FileName)
-                        BackgroundImage.ImageRectOffset = Vector2.zero
-                        BackgroundImage.ImageRectSize = Vector2.zero
-                    end
-                end
             end
         end
 
