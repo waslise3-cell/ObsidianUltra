@@ -19,7 +19,7 @@
 
 --// 1. Bootstrap \\--
 
-local Repo = "https://raw.githubusercontent.com/Naellx/ObsidianUltra/main/"
+local Repo = "https://github.com/waslise3-cell/ObsidianUltra/blob/main/"
 local Library = loadstring(game:HttpGet(Repo .. "Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet(Repo .. "addons/ThemeManager.lua"))()
 local SaveManager = loadstring(game:HttpGet(Repo .. "addons/SaveManager.lua"))()
